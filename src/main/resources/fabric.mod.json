@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "ayudante_ia",
+  "version": "${version}",
+  "name": "Ayudante IA",
+  "description": "Un asistente de IA dentro de Minecraft que te ayuda con consejos, crafteos, supervivencia y más.",
+  "authors": ["Daniel"],
+  "license": "MIT",
+  "icon": "assets/ayudante_ia/icon.png",
+  "environment": "*",
+  "entrypoints": { "main": ["com.daniel.ayudante.AyudanteIA"] },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
