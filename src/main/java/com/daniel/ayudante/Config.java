@@ -12,17 +12,26 @@ import java.nio.file.Path;
 public class Config {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
-    public String apiKey = "";                 // o usa la variable de entorno ANTHROPIC_API_KEY
-    public String model = "claude-sonnet-5-5";
-    public int maxTokens = 400;
+    // "openai" = cualquier servicio compatible con el formato de OpenAI (Groq, Gemini, OpenRouter...)
+    // "anthropic" = API de Anthropic (de pago)
+    public String provider = "openai";
+    public String baseUrl = "https://api.groq.com/openai/v1";   // solo para provider "openai"
+    public String apiKey = "";                                    // o variable de entorno AYUDANTE_API_KEY
+    public String model = "openai/gpt-oss-120b";
+    public int maxTokens = 1500;               // los modelos que "razonan" gastan tokens pensando
     public int cooldownSeconds = 3;
     public int maxHistory = 20;                // mensajes recordados por jugador
     public String chatPrefix = "ia ";          // escribe "ia como hago una granja" en el chat
     public String nombreAyudante = "Ayudante";
 
+    public boolean isAnthropic() {
+        return "anthropic".equalsIgnoreCase(provider);
+    }
+
     public String resolveKey() {
         if (apiKey != null && !apiKey.isBlank()) return apiKey.trim();
-        String env = System.getenv("ANTHROPIC_API_KEY");
+        String env = System.getenv("AYUDANTE_API_KEY");
+        if ((env == null || env.isBlank()) && isAnthropic()) env = System.getenv("ANTHROPIC_API_KEY");
         return env == null ? "" : env.trim();
     }
 
