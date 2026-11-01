@@ -68,7 +68,7 @@ public class AyudanteIA implements ModInitializer {
         lastUse.put(player.getUUID(), now);
 
         // El contexto se lee en el hilo del servidor; la llamada HTTP corre en segundo plano.
-        String context = ContextBuilder.build(player);
+        String context = ContextBuilder.build(player, question);
         reply(player, "pensando...", ChatFormatting.GRAY);
 
         var server = player.level().getServer();
