@@ -1,6 +1,7 @@
 package com.daniel.ayudante;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -16,9 +17,9 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Cliente HTTP asíncrono para la API de Anthropic, con memoria de conversación por jugador. */
+/** Cliente HTTP asíncrono (Anthropic u OpenAI-compatible) con memoria de conversación por jugador. */
 public class AiClient {
-    private static final URI ENDPOINT = URI.create("https://api.anthropic.com/v1/messages");
+    private static final URI ANTHROPIC_ENDPOINT = URI.create("https://api.anthropic.com/v1/messages");
 
     private static final String SYSTEM_PROMPT = """
             Eres un ayudante de IA que vive dentro de Minecraft y acompaña al jugador.
@@ -43,35 +44,62 @@ public class AiClient {
         String key = cfg.resolveKey();
         if (key.isEmpty()) {
             return CompletableFuture.failedFuture(new IllegalStateException(
-                    "Falta la API key. Ponla en config/ayudante-ia.json o en ANTHROPIC_API_KEY."));
+                    "Falta la API key. Ponla en config/ayudante-ia.json (campo apiKey)."));
         }
 
-        Deque<JsonObject> hist = history.computeIfAbsent(player, k -> new ArrayDeque<>());
-        JsonArray messages = new JsonArray();
-        synchronized (hist) {
-            for (JsonObject m : hist) messages.add(m);
+        final boolean anthropic = cfg.isAnthropic();
+        final Deque<JsonObject> hist = history.computeIfAbsent(player, k -> new ArrayDeque<>());
+
+        HttpRequest req;
+        try {
+            JsonArray messages = new JsonArray();
+            if (!anthropic) messages.add(message("system", SYSTEM_PROMPT));
+            synchronized (hist) {
+                for (JsonObject m : hist) messages.add(m);
+            }
+            messages.add(message("user", gameContext + "\n[PREGUNTA]\n" + userMessage));
+
+            JsonObject body = new JsonObject();
+            body.addProperty("model", cfg.model);
+            body.addProperty("max_tokens", cfg.maxTokens);
+            if (anthropic) body.addProperty("system", SYSTEM_PROMPT);
+            body.add("messages", messages);
+
+            HttpRequest.Builder rb;
+            if (anthropic) {
+                rb = HttpRequest.newBuilder(ANTHROPIC_ENDPOINT)
+                        .header("x-api-key", key)
+                        .header("anthropic-version", "2023-06-01");
+            } else {
+                String base = cfg.baseUrl == null ? "" : cfg.baseUrl.trim();
+                while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+                rb = HttpRequest.newBuilder(URI.create(base + "/chat/completions"))
+                        .header("Authorization", "Bearer " + key);
+            }
+            req = rb.timeout(Duration.ofSeconds(60))
+                    .header("content-type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                    .build();
+        } catch (RuntimeException e) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Config inválida (revisa baseUrl y model): " + e.getMessage()));
         }
-        messages.add(message("user", gameContext + "\n[PREGUNTA]\n" + userMessage));
-
-        JsonObject body = new JsonObject();
-        body.addProperty("model", cfg.model);
-        body.addProperty("max_tokens", cfg.maxTokens);
-        body.addProperty("system", SYSTEM_PROMPT);
-        body.add("messages", messages);
-
-        HttpRequest req = HttpRequest.newBuilder(ENDPOINT)
-                .timeout(Duration.ofSeconds(60))
-                .header("content-type", "application/json")
-                .header("x-api-key", key)
-                .header("anthropic-version", "2023-06-01")
-                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
-                .build();
 
         return http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).thenApply(res -> {
-            if (res.statusCode() != 200) {
-                throw new RuntimeException("Error de la API (" + res.statusCode() + "): " + truncate(res.body(), 200));
+            int code = res.statusCode();
+            if (code == 401 || code == 403) {
+                throw new RuntimeException("La API key no es válida o no tiene permiso (" + code + ").");
             }
-            String text = extractText(res.body());
+            if (code == 429) {
+                throw new RuntimeException("Llegaste al límite del servicio. Espera un momento e intenta otra vez.");
+            }
+            if (code != 200) {
+                throw new RuntimeException("Error de la API (" + code + "): " + truncate(res.body(), 200));
+            }
+            String text = anthropic ? extractAnthropic(res.body()) : extractOpenAi(res.body());
+            if (text.isBlank()) {
+                throw new RuntimeException("La IA no devolvió texto. Prueba subir maxTokens en la config.");
+            }
             remember(hist, userMessage, text, cfg.maxHistory);
             return text;
         });
@@ -81,7 +109,7 @@ public class AiClient {
         synchronized (hist) {
             hist.addLast(message("user", user));
             hist.addLast(message("assistant", assistant));
-            while (hist.size() > Math.max(2, max)) { // se quitan en pares para mantener user/assistant alternados
+            while (hist.size() > Math.max(2, max)) { // en pares, para mantener user/assistant alternados
                 hist.removeFirst();
                 hist.removeFirst();
             }
@@ -95,14 +123,24 @@ public class AiClient {
         return o;
     }
 
-    private static String extractText(String json) {
+    private static String extractAnthropic(String json) {
         JsonObject root = JsonParser.parseString(json).getAsJsonObject();
         StringBuilder sb = new StringBuilder();
-        for (var el : root.getAsJsonArray("content")) {
+        for (JsonElement el : root.getAsJsonArray("content")) {
             JsonObject block = el.getAsJsonObject();
             if ("text".equals(block.get("type").getAsString())) sb.append(block.get("text").getAsString());
         }
         return sb.toString().trim();
+    }
+
+    private static String extractOpenAi(String json) {
+        JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+        JsonArray choices = root.getAsJsonArray("choices");
+        if (choices == null || choices.isEmpty()) return "";
+        JsonObject msg = choices.get(0).getAsJsonObject().getAsJsonObject("message");
+        if (msg == null) return "";
+        JsonElement content = msg.get("content");
+        return (content == null || content.isJsonNull()) ? "" : content.getAsString().trim();
     }
 
     private static String truncate(String s, int n) {
